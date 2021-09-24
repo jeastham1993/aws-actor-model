@@ -1,0 +1,268 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description:
+  Actor model on AWS.
+
+Globals:
+  Function:
+    Runtime: dotnetcore3.1
+    Timeout: 30
+    MemorySize: 256
+    Tags:
+      Project: aws-actor-model
+
+Resources:
+  CartActor:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: ./handlers/CartActor/
+      Handler: CartActor::CartActor.Function::HandlerFunction
+      ReservedConcurrentExecutions: 1
+      Environment:
+        Variables:
+          STATE_STORE: cart-state
+      Events:
+        CartActorMessages:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt CartActorMessages.Arn
+            BatchSize: 1
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: "cart-state"
+        - DynamoDBWritePolicy:
+            TableName: "cart-state"
+        - EventBridgePutEventsPolicy:
+            EventBusName: "default"
+        - Statement:
+            - Sid: AllowSqsList
+              Effect: Allow
+              Action:
+                - sqs:ListQueues
+              Resource: '*'
+        - Statement:
+            - Sid: AllowSqsSend
+              Effect: Allow
+              Action:
+                - sqs:SendMessage
+              Resource: !Sub 'arn:aws:sqs:*:${AWS::AccountId}:*'
+
+  OrderActor:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: ./handlers/OrderActor/
+      Handler: OrderActor::OrderActor.Function::HandlerFunction
+      ReservedConcurrentExecutions: 1
+      Environment:
+        Variables:
+          STATE_STORE: order-state
+      Events:
+        OrderActorMessages:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt OrderActorMessages.Arn
+            BatchSize: 1
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: "order-state"
+        - DynamoDBWritePolicy:
+            TableName: "order-state"
+        - EventBridgePutEventsPolicy:
+            EventBusName: "default"
+        - Statement:
+            - Sid: AllowSqsList
+              Effect: Allow
+              Action:
+                - sqs:ListQueues
+              Resource: '*'
+        - Statement:
+            - Sid: AllowSqsSend
+              Effect: Allow
+              Action:
+                - sqs:SendMessage
+              Resource: !Sub 'arn:aws:sqs:*:${AWS::AccountId}:*'
+
+  AddProductEndpoint:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: ./handlers/AddProductEndpoint/
+      Handler: AddProductEndpoint::AddProductEndpoint.Function::HandlerFunction
+      FunctionName: AddProductEndpoint
+      Events:
+        HttpPost:
+          Type: Api
+          Properties:
+            Path: '/cart'
+            Method: post
+            RestApiId: !Ref CartApi
+      Policies:
+        - Statement:
+            - Sid: AllowSqsList
+              Effect: Allow
+              Action:
+                - sqs:ListQueues
+              Resource: '*'
+        - Statement:
+            - Sid: AllowSqsSend
+              Effect: Allow
+              Action:
+                - sqs:SendMessage
+              Resource: !Sub 'arn:aws:sqs:*:${AWS::AccountId}:*'
+
+  RemoveProductEndpoint:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: ./handlers/RemoveProductEndpoint/
+      Handler: RemoveProductEndpoint::RemoveProductEndpoint.Function::HandlerFunction
+      FunctionName: RemoveProductEndpoint
+      Events:
+        HttpPost:
+          Type: Api
+          Properties:
+            Path: '/cart/product/remove'
+            Method: post
+            RestApiId: !Ref CartApi
+      Policies:
+        - Statement:
+            - Sid: AllowSqsList
+              Effect: Allow
+              Action:
+                - sqs:ListQueues
+              Resource: '*'
+        - Statement:
+            - Sid: AllowSqsSend
+              Effect: Allow
+              Action:
+                - sqs:SendMessage
+              Resource: !Sub 'arn:aws:sqs:*:${AWS::AccountId}:*'
+
+  GetCartEndpoint:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: ./handlers/GetCartEndpoint/
+      Handler: GetCartEndpoint::GetCartEndpoint.Function::HandlerFunction
+      FunctionName: GetCartEndpoint
+      Environment:
+        Variables:
+          STATE_STORE: cart-state
+      Events:
+        HttpPost:
+          Type: Api
+          Properties:
+            Path: '/cart/list/{customerId}'
+            Method: get
+            RestApiId: !Ref CartApi
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: "cart-state"
+
+  CreateNewOrderEndpoint:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: ./handlers/CreateOrderEndpoint/
+      Handler: CreateOrderEndpoint::CreateOrderEndpoint.Function::HandlerFunction
+      FunctionName: CreateNewOrderEndpoint
+      Events:
+        HttpPost:
+          Type: Api
+          Properties:
+            Path: '/order'
+            Method: post
+            RestApiId: !Ref OrderApi
+      Policies:
+        - Statement:
+            - Sid: AllowSqsList
+              Effect: Allow
+              Action:
+                - sqs:ListQueues
+              Resource: '*'
+        - Statement:
+            - Sid: AllowSqsSend
+              Effect: Allow
+              Action:
+                - sqs:SendMessage
+              Resource: !Sub 'arn:aws:sqs:*:${AWS::AccountId}:*'
+                 
+  CartActorMessages:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: 'actor-cart.fifo'
+      FifoQueue: true
+      ContentBasedDeduplication: true
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt CartActorMessageDLQ.Arn
+        maxReceiveCount: 3
+
+  CartActorMessageDLQ:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: 'cart-actor-dlq.fifo'
+      FifoQueue: true
+
+  OrderActorMessages:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: 'actor-order.fifo'
+      FifoQueue: true
+      ContentBasedDeduplication: true
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt OrderActorMessageDLQ.Arn
+        maxReceiveCount: 3
+
+  OrderActorMessageDLQ:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: 'order-actor-dlq.fifo'
+      FifoQueue: true
+
+  CartApi:
+    Type: AWS::Serverless::Api
+    Properties:
+      StageName: dev
+      MethodSettings:
+        - ResourcePath: "/*"
+          HttpMethod: "*"
+      Cors:
+        AllowMethods: "'DELETE,GET,HEAD,OPTIONS,PATCH,POST,PUT'"
+        AllowHeaders: "'Content-Type,X-Amz-Date,X-Amz-Security-Token,Authorization,X-Api-Key,X-Requested-With,Accept,Access-Control-Allow-Methods,Access-Control-Allow-Origin,Access-Control-Allow-Headers'"
+        AllowOrigin: "'*'"
+
+  OrderApi:
+    Type: AWS::Serverless::Api
+    Properties:
+      StageName: dev
+      MethodSettings:
+        - ResourcePath: "/*"
+          HttpMethod: "*"
+      Cors:
+        AllowMethods: "'DELETE,GET,HEAD,OPTIONS,PATCH,POST,PUT'"
+        AllowHeaders: "'Content-Type,X-Amz-Date,X-Amz-Security-Token,Authorization,X-Api-Key,X-Requested-With,Accept,Access-Control-Allow-Methods,Access-Control-Allow-Origin,Access-Control-Allow-Headers'"
+        AllowOrigin: "'*'"
+
+  CartState:
+    Type: 'AWS::DynamoDB::Table'
+    Properties:
+      TableName: "cart-state"
+      AttributeDefinitions:
+        -
+          AttributeName: PK
+          AttributeType: S
+      KeySchema:
+        -
+          AttributeName: PK
+          KeyType: HASH
+      BillingMode: PAY_PER_REQUEST
+
+  OrderState:
+    Type: 'AWS::DynamoDB::Table'
+    Properties:
+      TableName: "order-state"
+      AttributeDefinitions:
+        -
+          AttributeName: PK
+          AttributeType: S
+      KeySchema:
+        -
+          AttributeName: PK
+          KeyType: HASH
+      BillingMode: PAY_PER_REQUEST
